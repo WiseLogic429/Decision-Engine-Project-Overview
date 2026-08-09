@@ -1,0 +1,219 @@
+# Decision Engine
+
+Decision Engine is a Python-based loan decisioning service that converts mortgage underwriting requirements into safe, testable, and auditable expressions.
+
+Instead of hard-coding eligibility rules throughout application code, the platform represents underwriting logic as data. Administrators can compose conditions through a user interface, compile those conditions into expressions, validate them, and evaluate them against structured applicant information. The result is an automatic **eligible** or **not eligible** decision accompanied by the exact expression evaluated, supporting transparency and auditability.
+
+## Why This Project Exists
+
+Mortgage underwriting involves hundreds of rules covering credit scores, debt ratios, loan-to-value limits, reserves, documentation types, property characteristics, and derogatory credit events.
+
+Embedding these requirements directly in application code makes them difficult to maintain, test, explain, and update. Decision Engine separates the rules from the application logic by providing a dedicated expression language and evaluation engine.
+
+This approach enables underwriting rules to be:
+
+- Configured outside the core application code
+- Validated before execution
+- Evaluated consistently across applicants
+- Tested individually and in combination
+- Traced back to the exact expression used for a decision
+- Safely updated without permitting arbitrary code execution
+
+The implementation is based on a collection of markdown business-rule documents containing approximately 485 formulas, along with a specification describing the original rule language.
+
+## How It Works
+
+The decisioning flow has five main stages:
+
+1. An administrator defines eligibility conditions through a UI or structured rule payload.
+2. The rule builder converts those conditions into an expression.
+3. The tokenizer and parser transform the expression into an Abstract Syntax Tree.
+4. The validator checks variables, functions, operators, and expression structure.
+5. The evaluator executes the validated tree against an applicant’s data and returns a typed decision.
+
+```text
+UI conditions
+    ↓
+Expression builder
+    ↓
+Tokenizer
+    ↓
+Parser and AST
+    ↓
+Static validation
+    ↓
+Evaluation against applicant data
+    ↓
+Eligible / not eligible decision
+```
+
+## Safe Expression Evaluation
+
+The engine deliberately does not use Python’s `eval()` function.
+
+Rules may originate from an administrative interface or database, so passing them to a general-purpose language runtime would introduce a serious code-injection risk. Decision Engine instead uses a closed interpreter that can perform only explicitly supported operations.
+
+The expression language supports:
+
+- Numeric and string comparisons
+- Boolean logic with short-circuit evaluation
+- `IN` membership checks
+- `BETWEEN` range checks
+- Arithmetic operations
+- String concatenation
+- Boolean and numeric unary operators
+- A registry of 46 approved functions with argument-count validation
+
+Because expressions are parsed into an AST and evaluated by controlled handlers, a rule cannot access the filesystem, import modules, invoke system commands, or execute arbitrary Python code.
+
+## Applicant Data Model
+
+Rules are evaluated against a flat context created from typed applicant records. The input models reflect common Uniform Residential Loan Application and credit-bureau attributes.
+
+The supported data includes:
+
+- **Borrower profile:** credit score, property state, and occupancy
+- **Financial information:** loan amount, property value, LTV, CLTV, DTI, asset reserves, and documentation type
+- **Credit history:** foreclosure status, foreclosure seasoning, mortgage delinquencies, bankruptcy filings, and tradeline depth
+
+Pydantic models validate information at the API boundary. For example, FICO scores must fall within an acceptable range, while ratio fields use normalized decimal values.
+
+The engine expects already-structured applicant data. PDF extraction, OCR, and document classification are upstream responsibilities and are not part of this project.
+
+## Expression Semantics
+
+The evaluator implements predictable rules for working with values:
+
+- Ordering comparisons such as `<`, `>`, `<=`, and `>=` are numeric.
+- Equality comparisons are numeric when both values are numeric; otherwise, they are string comparisons.
+- Blank values are treated as `0` in numeric contexts and as an empty string in string contexts.
+- Values with meaningful leading zeros, such as account identifiers, remain strings.
+- Boolean `AND` and `OR` operations short-circuit correctly.
+- Unknown variables produce a clear error in strict mode and resolve to blank values in lenient mode.
+
+The engine also supplies underwriting-specific functions for:
+
+- LTV, CLTV, and DTI calculations
+- Representative credit scores and FICO bands
+- Dates and seasoning periods
+- Agency derogatory-event waiting periods
+- Metro 2 credit-status classifications
+- Charge-off, collection, and major-derogatory detection
+- String, mathematical, and logical operations
+
+## Modernization of the Original Rule Format
+
+The source rule language previously relied on specially delimited strings, text replacement, and a shunting-yard evaluation process. Empty operands also required a dedicated marker to prevent them from disappearing during string splitting.
+
+Decision Engine preserves the intended business behavior while replacing those fragile mechanisms with standard language-processing components.
+
+| Original mechanism | Decision Engine equivalent |
+|---|---|
+| Special token delimiters | Typed tokenizer |
+| Shunting-yard string processing | Recursive-descent parser |
+| Empty-value marker | Explicit blank-value coercion |
+| String-based variable substitution | Runtime context lookup |
+| Ad hoc expression execution | Structured AST evaluation |
+
+The AST-based design makes operator precedence explicit and allows tokenization, parsing, validation, and evaluation to be tested independently.
+
+## Main Components
+
+The project is organized around a Python package containing approximately 1,900 lines across 14 modules.
+
+Key components include:
+
+- **Tokenizer:** Converts expression text into typed tokens
+- **Parser:** Builds an Abstract Syntax Tree using recursive descent
+- **AST models:** Represent literals, variables, operators, ranges, lists, and function calls
+- **Validator:** Performs static checks and returns structured validation reports
+- **Evaluator:** Walks the AST and executes expressions against applicant data
+- **Value system:** Implements numeric, string, blank-value, and equality semantics
+- **Function registry:** Exposes 46 approved, argument-checked functions
+- **Rule builder:** Compiles UI condition groups into expression strings
+- **Engine façade:** Provides high-level compile, validate, and evaluate operations
+- **Input schemas:** Validate and flatten typed applicant records
+- **REST API:** Makes the engine available through FastAPI
+
+## API Capabilities
+
+The REST interface provides endpoints for:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Check service availability |
+| `GET` | `/catalog` | List supported functions and operators |
+| `POST` | `/validate` | Validate an expression without executing it |
+| `POST` | `/evaluate` | Evaluate an expression against a context |
+| `POST` | `/rules/compile` | Convert a UI rule group into an expression |
+| `POST` | `/rules/evaluate` | Compile and evaluate a rule in one request |
+
+## Testing Strategy
+
+The repository includes 27 automated tests covering both language behavior and mortgage decisioning scenarios.
+
+The test suite verifies:
+
+- Operator precedence
+- Numeric and string coercion
+- Blank-value behavior
+- Membership and range operations
+- Function registration and argument validation
+- Rule compilation
+- Boolean short-circuiting
+- Hard underwriting knockouts
+- DTI and credit-score interactions
+- Foreclosure and bankruptcy seasoning
+- Applicant schema boundaries
+- End-to-end eligibility decisions
+
+These tests ensure that the language implementation works correctly while also demonstrating realistic mortgage-risk use cases.
+
+## Example Use Case
+
+A portfolio program can require an applicant to meet several conditions:
+
+- FICO score of at least 600
+- LTV between 0% and 85%
+- DTI no higher than 50%
+- Property located in New Jersey, New York, or Pennsylvania
+
+The rule builder converts those selections into a deterministic expression. The evaluator executes it against the applicant context and returns the decision together with the compiled expression, creating a traceable record of the logic used.
+
+## Technology Stack
+
+- Python
+- FastAPI
+- Pydantic
+- Recursive-descent parsing
+- Abstract Syntax Trees
+- Pytest
+
+## Project Scope
+
+The project includes:
+
+- Expression tokenizer, parser, and AST
+- Safe tree-walking evaluator
+- Static expression validator
+- UI-condition compiler
+- Typed applicant schemas
+- Underwriting and credit functions
+- Standards-based constants
+- FastAPI integration
+- Unit and end-to-end decisioning tests
+
+The project intentionally does not include:
+
+- PDF or OCR document extraction
+- Enterprise service-bus or BizTalk integration
+- AI-governance scoring
+- Proprietary holiday or business-calendar implementations
+
+Calendar-specific behavior is exposed through registration hooks instead of relying on guessed proprietary logic. The markdown business rules and rule-language specification are source inputs to the implementation rather than artifacts authored as part of the codebase.
+
+## Summary
+
+Decision Engine demonstrates how complex underwriting requirements can be moved out of hard-coded application logic and represented as secure, validated, and auditable data.
+
+Its primary value is not simply evaluating conditions. It provides a controlled language boundary between business-configurable rules and application execution. This makes loan decisioning safer to operate, easier to test, simpler to explain, and more adaptable as underwriting requirements evolve.
